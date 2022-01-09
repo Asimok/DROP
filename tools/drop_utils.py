@@ -93,10 +93,12 @@ def extract_answer_info_from_annotation(answer_annotation):
     return answer_type, answer_texts
 
 
-def word_tokenize(sent, tokenizer):
+def word_tokenize(sent, tokenizer,max_length):
     # doc = nlp(sent)
     # return [token.text for token in doc]
-    return tokenizer(sent, add_special_tokens=False).encodings[0].tokens
+    return \
+    tokenizer(sent, add_special_tokens=False, max_length=max_length, padding='max_length', truncation=True).encodings[
+        0].tokens
 
 
 def tokenize_sentence(sent, tokenizer, max_length):

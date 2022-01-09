@@ -23,24 +23,26 @@ def get_examples(_hparams, _tokenizer, filePath):
     :param filePath:
     :return: examples
     """
+    _log = get_logger(log_name="DropDataloader")
     _examples = []
     eval_examples = {}
     # nlp = spacy.blank("en")
-    log = get_logger(log_name="get_examples")
+
     total_items = 0
-    log.info('Load source data from ' + filePath)
+    _log.info('Load source data from ' + filePath)
     source_data = json.load(open(filePath, 'r'))
-    log.info('Prepare to process raw data')
+    _log.info('Prepare to process raw data')
     for passage_id, article in tqdm(source_data.items()):
         passage_text = article['passage'].replace("''", '" ').replace("``", '" ')
-        passage_tokens = word_tokenize(sent=passage_text, tokenizer=_tokenizer)
+        passage_tokens = word_tokenize(sent=passage_text, tokenizer=_tokenizer, max_length=_hparams.max_passage_length)
         passage_spans = convert_token_to_idx(' '.join(passage_tokens), passage_tokens)
 
         for qa_pair in article['qa_pairs']:
             total_items += 1
             question_id = qa_pair['query_id']
             question_text = qa_pair['question'].replace("''", '" ').replace("``", '" ')
-            question_tokens = word_tokenize(sent=question_text, tokenizer=_tokenizer)
+            question_tokens = word_tokenize(sent=question_text, tokenizer=_tokenizer,
+                                            max_length=_hparams.max_question_length)
 
             answer_annotations = list()
             answer_type = None
@@ -66,7 +68,8 @@ def get_examples(_hparams, _tokenizer, filePath):
                 # Tokenize and recompose the answer text in order to find the matching span based on token
                 tokenized_answer_texts = []
                 for answer_text in answer_texts:
-                    answer_tokens = word_tokenize(sent=answer_text, tokenizer=_tokenizer)
+                    answer_tokens = word_tokenize(sent=answer_text, tokenizer=_tokenizer,
+                                                  max_length=_hparams.max_answer_span_length)
                     tokenized_answer_texts.append(" ".join(token for token in answer_tokens))
                 # log.info(tokenized_answer_texts)
 
@@ -168,15 +171,15 @@ def get_examples(_hparams, _tokenizer, filePath):
     return _examples, eval_examples
 
 
-def load_dataset(_hparams, _tokenizer, _evaluate=False):
+def load_dataset(_hparams, _tokenizer,_evaluate=False):
     """
     :param _hparams:
     :param _tokenizer:
     :param _evaluate:
     :return: _dataset, _examples
     """
-    log = get_logger(log_name="load_dataset")
-    log.info('Load dataset with evaluate = ' + str(_evaluate))
+    _log = get_logger(log_name="DropDataloader")
+    _log.info('Load dataset with evaluate = ' + str(_evaluate))
     # 缓存
     temp_file = "cache_from_{}_for_{}.pth".format(
         (_hparams.testFile if _evaluate else _hparams.trainFile).split(".")[0],
@@ -185,22 +188,22 @@ def load_dataset(_hparams, _tokenizer, _evaluate=False):
     cache_file_path = os.path.join(_hparams.cachePath, temp_file)
     if os.path.exists(cache_file_path):
         # 加载缓存数据
-        log.info("Loading dataset from cached file %s", cache_file_path)
+        _log.info("Loading dataset from cached file %s", cache_file_path)
         dataset_and_examples = torch.load(cache_file_path)
         _dataset, _examples = dataset_and_examples["dataset"], dataset_and_examples["examples"]
         return _dataset, _examples
     else:
-        log.info("Can not load cache from " + cache_file_path)
-        log.info("Creating dataset ...")
+        _log.info("Can not load cache from " + cache_file_path)
+        _log.info("Creating dataset ...")
         if _evaluate:
             _examples, dev_eval = get_examples(_hparams=_hparams, _tokenizer=_tokenizer,
                                                filePath=os.path.join(_hparams.datasetPath, _hparams.testFile))
-            save_json_data_to_file(filename=_hparams.dev_eval_file, json_data=dev_eval, message="dev eval", log=log)
+            save_json_data_to_file(filename=_hparams.dev_eval_file, json_data=dev_eval, message="dev eval", log=_log)
         else:
             _examples, train_eval = get_examples(_hparams=_hparams, _tokenizer=_tokenizer,
                                                  filePath=os.path.join(_hparams.datasetPath, _hparams.trainFile))
             save_json_data_to_file(filename=_hparams.train_eval_file, json_data=train_eval, message="train eval",
-                                   log=log)
+                                   log=_log)
 
         passage_text_input_ids, passage_text_attention_mask = [], []
         question_text_input_ids, question_text_attention_mask = [], []
@@ -209,7 +212,7 @@ def load_dataset(_hparams, _tokenizer, _evaluate=False):
         counts_input_ids, count_attention_mask = [], []
         id_input_ids, id_attention_mask = [], []
 
-        log.info('Prepared to create tensor dataset')
+        _log.info('Prepared to create tensor dataset')
         for example in _examples:
             temp_passage_text_input_ids, temp_passage_text_attention_mask = tokenize_sentence(
                 sent=example['passage_text'],
@@ -258,7 +261,7 @@ def load_dataset(_hparams, _tokenizer, _evaluate=False):
 
         if not is_torch_available():
             raise RuntimeError("PyTorch must be installed to return a PyTorch dataset.")
-        log.info("Created dataset length = %d.", len(_examples))
+        _log.info("Created dataset length = %d.", len(_examples))
         if _evaluate:
             _dataset = TensorDataset(
                 torch.tensor(passage_text_input_ids, dtype=torch.long),
@@ -285,11 +288,10 @@ def load_dataset(_hparams, _tokenizer, _evaluate=False):
                 torch.tensor(count_attention_mask, dtype=torch.long),
                 torch.tensor(id_input_ids, dtype=torch.long),
                 torch.tensor(id_attention_mask, dtype=torch.long)
-
             )
-    log.info('Prepared to save cache')
+    _log.info('Prepared to save cache')
     torch.save({"dataset": _dataset, "examples": _examples}, cache_file_path)
-    log.info('Cache has been saved to ' + cache_file_path)
+    _log.info('Cache has been saved to ' + cache_file_path)
     return _dataset, _examples
 
 
@@ -297,6 +299,6 @@ if __name__ == '__main__':
     hparams = PARAMS
     hparams = collections.namedtuple("HParams", sorted(hparams.keys()))(**hparams)
     tokenizer = AutoTokenizer.from_pretrained(hparams.pretrainedModelPath)
-
+    log = get_logger('process_source_data_for_drop')
     # get_examples(hparams=hparams_for_all, filePath=os.path.join(hparams_for_all.datasetPath, hparams_for_all.trainFile))
     dataset, examples = load_dataset(_hparams=hparams, _tokenizer=tokenizer, _evaluate=False)
