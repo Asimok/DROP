@@ -18,26 +18,26 @@ from torch.utils.data import DataLoader
 
 hparams = PARAMS
 hparams = collections.namedtuple("HParams", sorted(hparams.keys()))(**hparams)
-# tokenizer = AutoTokenizer.from_pretrained(hparams.pretrainedModelPath)
-#
-# train_dataset = DropDataloader(hparams=hparams, evaluate=False, tokenizer=tokenizer)
-#
-# train_dataloader = DataLoader(
-#     train_dataset,
-#     batch_size_for_train=4,
-#     num_workers=hparams.workers,
-#     shuffle=True,
-#     drop_last=True
-# )
-#
-# tqdm_batch_iterator = tqdm(train_dataloader)
-# data = []
-# i = 0
-# for batch_idx, batch in enumerate(tqdm_batch_iterator):
-#     print(batch_idx)
-#     data.append(batch)
-#     # break
-#     # print(batch.keys())
-#     i += 1
-#     if i > 5:
-#         break
+tokenizer = AutoTokenizer.from_pretrained(hparams.pretrainedModelPath)
+
+train_dataset = DropDataloader(hparams=hparams, evaluate=False, tokenizer=tokenizer)
+
+train_dataloader = DataLoader(
+    train_dataset,
+    num_workers=hparams.workers,
+    shuffle=True,
+    drop_last=True,
+    batch_size=32,
+)
+
+tqdm_batch_iterator = tqdm(train_dataloader)
+data = []
+i = 0
+for batch_idx, batch in enumerate(tqdm_batch_iterator):
+    print(batch_idx)
+    data.append(batch)
+    # break
+    # print(batch.keys())
+    # i += 1
+    # if i > 5:
+    #     break

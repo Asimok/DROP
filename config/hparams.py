@@ -8,6 +8,7 @@ PARAMS = defaultdict(
     do_train=True,
     do_test=True,
     max_count=10000,  # maximum counting ability of the network
+    answering_abilities=["span_extraction", "addition_subtraction", "counting", "negation"],
 
     # train
     device='cuda',
@@ -27,7 +28,7 @@ PARAMS = defaultdict(
     # datasetPath='/data0/maqi/drop/datasets/drop_data',
     trainFile='drop_dataset_train_standardized.json',
     testFile='drop_dataset_dev_standardized.json',
-    pretrainedModelPath='bert-base-uncased',
+    pretrainedModelPath='/data0/maqi/pretrained_model/pytorch/bert-base-uncased',
     ## processed files
     modelSavePath='/data0/maqi/drop/output/model',
     cachePath='/data0/maqi/drop/temp',  # 预处理数据的缓存
@@ -40,9 +41,12 @@ PARAMS = defaultdict(
 
     ## tokenize
     # 如果更改下面参数 则需要重新进行数据集预处理
-    max_passage_length=512,  # 段落长度
-    max_question_length=128,  # 问题长度
-    max_answer_span_length=32,  # 答案长度 包括multi span
-    max_auxiliary_len=8,  # 辅助计算的字段长度 比如 id count
+    max_question_add_passage_length=512,  # 问题+段落长度
+    max_number_indices_len=64,  # 包含的数字数量
+    max_answer_nums_length=4,  # 答案数量
+    max_auxiliary_len=1,  # 辅助计算的字段长度 比如 id count
+    max_add_sub_combination_len=8,  # 加减运算的数量
+    max_negation_combination_len=1,  # 否定句数量
+    max_number_of_numbers_to_consider=2,  # 算术运算数字的最大数量
 
 )

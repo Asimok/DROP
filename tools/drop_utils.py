@@ -1,7 +1,9 @@
 import itertools
 import string
 from collections import defaultdict
+from decimal import Decimal
 from enum import Enum
+from tokenize import Token
 from typing import List
 
 from word2number.w2n import word_to_num
@@ -93,12 +95,12 @@ def extract_answer_info_from_annotation(answer_annotation):
     return answer_type, answer_texts
 
 
-def word_tokenize(sent, tokenizer,max_length):
+def word_tokenize(sent, tokenizer):
     # doc = nlp(sent)
     # return [token.text for token in doc]
     return \
-    tokenizer(sent, add_special_tokens=False, max_length=max_length, padding='max_length', truncation=True).encodings[
-        0].tokens
+        tokenizer(sent, add_special_tokens=False).encodings[
+            0].tokens
 
 
 def tokenize_sentence(sent, tokenizer, max_length):
@@ -229,3 +231,28 @@ def find_valid_counts(count_numbers: List[int], targets: List[int]) -> List[int]
         if number in targets:
             valid_indices.append(index)
     return valid_indices
+
+
+def find_valid_negations(numbers: List[int], targets: List[int]) -> List[List[int]]:
+    valid_negations = []
+    decimal_targets = [Decimal(x).quantize(Decimal('0.00')) for x in targets]
+    for index, number in enumerate(numbers):
+        decimal_negating_number = Decimal(100 - number).quantize(Decimal('0.00'))
+        if 0 < number < 100 and decimal_negating_number in decimal_targets:
+            labels_for_numbers = [0] * len(numbers)
+            labels_for_numbers[index] = 1
+            valid_negations.append(labels_for_numbers)
+    return valid_negations
+def convert_answer_spans(spans, orig_to_tok_index, all_len, all_tokens):
+    tok_start_positions, tok_end_positions = [], []
+    for span in spans:
+        start_position, end_position = span[0], span[1]
+        tok_start_position = orig_to_tok_index[start_position]
+        if end_position + 1 >= len(orig_to_tok_index):
+            tok_end_position = all_len - 1
+        else:
+            tok_end_position = orig_to_tok_index[end_position + 1] - 1
+        if tok_start_position < len(all_tokens) and tok_end_position < len(all_tokens):
+            tok_start_positions.append(tok_start_position)
+            tok_end_positions.append(tok_end_position)
+    return tok_start_positions, tok_end_positions

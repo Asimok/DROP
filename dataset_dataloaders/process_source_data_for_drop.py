@@ -1,19 +1,19 @@
 import collections
+import copy
 import json
 import os
 from typing import OrderedDict
 
 import torch
-from torch.utils.data import TensorDataset
 from tqdm import tqdm
-from transformers import AutoTokenizer, is_torch_available
+from transformers import AutoTokenizer
 
 from config.hparams import PARAMS
 from tools.drop_utils import get_answer_type, AnswerAccessor, extract_answer_info_from_annotation, \
     word_tokenize, find_valid_spans, convert_word_to_number, find_valid_add_sub_expressions, \
-    find_valid_counts, ALL_ANSWER_TYPES, tokenize_sentence, convert_token_to_idx
+    find_valid_counts, ALL_ANSWER_TYPES, convert_token_to_idx, find_valid_negations, \
+    convert_answer_spans
 from tools.log import get_logger
-from tools.tool import save_json_data_to_file
 
 
 def get_examples(_hparams, _tokenizer, filePath):
@@ -34,15 +34,15 @@ def get_examples(_hparams, _tokenizer, filePath):
     _log.info('Prepare to process raw data')
     for passage_id, article in tqdm(source_data.items()):
         passage_text = article['passage'].replace("''", '" ').replace("``", '" ')
-        passage_tokens = word_tokenize(sent=passage_text, tokenizer=_tokenizer, max_length=_hparams.max_passage_length)
+        passage_tokens = word_tokenize(sent=passage_text, tokenizer=_tokenizer)
         passage_spans = convert_token_to_idx(' '.join(passage_tokens), passage_tokens)
 
         for qa_pair in article['qa_pairs']:
             total_items += 1
             question_id = qa_pair['query_id']
             question_text = qa_pair['question'].replace("''", '" ').replace("``", '" ')
-            question_tokens = word_tokenize(sent=question_text, tokenizer=_tokenizer,
-                                            max_length=_hparams.max_question_length)
+            question_tokens = word_tokenize(sent=question_text, tokenizer=_tokenizer
+                                            )
 
             answer_annotations = list()
             answer_type = None
@@ -65,12 +65,20 @@ def get_examples(_hparams, _tokenizer, filePath):
                 answer_accessor, answer_texts = extract_answer_info_from_annotation(answer_annotations[0])
                 if answer_accessor == AnswerAccessor.SPAN.value:
                     answer_texts = list(OrderedDict.fromkeys(answer_texts))
+                # 控制答案长度
+                number_of_answer = _hparams.max_answer_nums_length if len(
+                    answer_texts) > _hparams.max_answer_nums_length else len(
+                    answer_texts)
+
                 # Tokenize and recompose the answer text in order to find the matching span based on token
                 tokenized_answer_texts = []
                 for answer_text in answer_texts:
-                    answer_tokens = word_tokenize(sent=answer_text, tokenizer=_tokenizer,
-                                                  max_length=_hparams.max_answer_span_length)
-                    tokenized_answer_texts.append(" ".join(token for token in answer_tokens))
+                    answer_tokens = word_tokenize(sent=answer_text, tokenizer=_tokenizer)
+                    tokenized_answer_texts.append(" ".join(answer_tokens))
+
+                    # answer_tokens = word_tokenize(sent=answer_text, tokenizer=_tokenizer)
+                    # answer_tokens = split_tokens_by_hyphen(answer_tokens)
+                    # tokenized_answer_texts.append(answer_tokens)
                 # log.info(tokenized_answer_texts)
 
                 # 记录passage 中数字所在的位置
@@ -94,6 +102,12 @@ def get_examples(_hparams, _tokenizer, filePath):
                     if tokenized_answer_texts
                     else []
                 )
+                valid_question_spans = (
+                    find_valid_spans(question_tokens, tokenized_answer_texts)
+                    if tokenized_answer_texts
+                    else []
+                )
+
                 # 提取出非阿拉伯数字位置 仅支持整数
                 if not valid_passage_spans and answer_type in ["number", "date"]:
                     try:
@@ -104,59 +118,43 @@ def get_examples(_hparams, _tokenizer, filePath):
                     except ValueError:
                         pass
 
+                # 如果没有从原文中提取出答案 则设置答案为None
+                number_of_answer = None if valid_passage_spans == [] and valid_question_spans == [] else number_of_answer
                 valid_signs_for_add_sub_expressions = []
                 valid_counts = []
                 if answer_type in ["number", "date"]:
                     valid_signs_for_add_sub_expressions = find_valid_add_sub_expressions(
-                        numbers_in_passage, target_numbers
+                        numbers_in_passage, target_numbers, max_number_of_numbers_to_consider=_hparams.max_number_of_numbers_to_consider
                     )
+
 
                 if answer_type in ["number"]:
                     # Support count number 0 ~ max_count. Does not support float
                     numbers_for_count = list(range(_hparams.max_count))
                     valid_counts = find_valid_counts(numbers_for_count, target_numbers)  # valid indices
-                    valid_counts = [str(count) for count in valid_counts]
+                    valid_counts = [count for count in valid_counts]
+
+                valid_negations = find_valid_negations(numbers_in_passage, target_numbers)
 
                 # Discard when no valid answer is available
-                if valid_counts == [] and valid_passage_spans == []:
+                if valid_counts == [] and valid_passage_spans == [] and valid_question_spans == []:
                     continue
-
-                # -1 if no answer is provided
-                if not valid_passage_spans:
-                    valid_passage_spans.append((-1, -1))
-                if not valid_signs_for_add_sub_expressions:
-                    valid_signs_for_add_sub_expressions.append([-1])
-                if not valid_counts:
-                    # 转换成字符串类型 防止tokenizer 报错
-                    valid_counts.append('-1')
-                if not number_indices:
-                    number_indices.append('-1')
-
-                # split start and end indices
-                start_indices = []
-                end_indices = []
-                for span in valid_passage_spans:
-                    start_indices.append(str(span[0]))
-                    end_indices.append(str(span[1]))
 
                 example = {
                     "passage_id": passage_id,
-                    "passage_text": passage_text,  # 原始文本
-                    "passage_tokens": passage_tokens,  # 分词后文本
                     "question_id": question_id,
-                    "question_text": question_text,
+                    "passage_tokens": passage_tokens,  # 分词后文本
                     "question_tokens": question_tokens,
-                    "answer_type": answer_type,
-                    "answer_annotations": answer_annotations,
-                    # answer: answer_annotations[0]  validated_answers: answer_annotations[1]
-                    "answer_texts": answer_texts,  # 答案 list
-                    "valid_passage_spans": valid_passage_spans,  # 答案所在范围 tuple
-                    "start_indices": ' '.join(start_indices),
-                    "end_indices": ' '.join(end_indices),
-                    "counts": ' '.join(valid_counts),
-                    "id": str(total_items),  # 当前item索引
+                    "numbers_in_passage": numbers_in_passage,  # 文档中数字
                     "number_index": number_indices,  # 文档中数字所在下标
-                    "add_sub_expressions": valid_signs_for_add_sub_expressions
+                    "answer_type": answer_type,
+                    "number_of_answer": number_of_answer,  # 答案长度
+                    "passage_spans": valid_passage_spans,  # 答案所在范围 tuple
+                    "question_spans": valid_question_spans,
+                    "add_sub_expressions": valid_signs_for_add_sub_expressions,
+                    "counts": valid_counts,
+                    "negations": valid_negations,
+                    "answer_annotations": answer_annotations,
                 }
                 _examples.append(example)
                 eval_examples[str(total_items)] = {
@@ -171,13 +169,267 @@ def get_examples(_hparams, _tokenizer, filePath):
     return _examples, eval_examples
 
 
-def load_dataset(_hparams, _tokenizer,_evaluate=False):
-    """
-    :param _hparams:
-    :param _tokenizer:
-    :param _evaluate:
-    :return: _dataset, _examples
-    """
+def get_features(_hparams, _tokenizer, _evaluate=False, file_path=None):
+    _log = get_logger(log_name="DropDataloader")
+    _log.info('Load dataset with evaluate = ' + str(_evaluate))
+
+    _examples, _eval_examples = get_examples(_hparams=_hparams, _tokenizer=_tokenizer,
+                                             filePath=file_path)
+    # TODO 构造输入
+    skip_count, truncate_count = 0, 0
+    features = []
+    for (example_index, example) in enumerate(_examples):
+        question_index = []
+        question_tokens = []
+        for (i, token) in enumerate(example['question_tokens']):
+            question_index.append(i)
+            question_tokens.append(token)
+
+        passage_index = []
+        passage_tokens = []
+        for (i, token) in enumerate(example['passage_tokens']):
+            passage_index.append(i)
+            passage_tokens.append(token)
+
+        # 确保问题完整 截断 passage
+        max_tokens_for_passage = _hparams.max_question_add_passage_length - len(question_tokens) - 3
+        all_passage_tokens_len = len(passage_tokens)
+        if all_passage_tokens_len > max_tokens_for_passage:
+            passage_tokens = passage_tokens[:max_tokens_for_passage]
+            truncate_count += 1
+        # 截断 number_index = example.number_index
+        number_index = []
+        for index in example['number_index']:
+            if index != -1:
+                temp_index = passage_index[index]
+                if temp_index < len(passage_tokens):
+                    number_index.append(temp_index)
+            else:
+                number_index.append(-1)
+
+        # 抽取 答案 span 下标
+        query_tok_start_positions, query_tok_end_positions = \
+            convert_answer_spans(example['question_spans'], question_index, len(question_tokens), question_tokens)
+
+        passage_tok_start_positions, passage_tok_end_positions = \
+            convert_answer_spans(example['passage_spans'], passage_index, all_passage_tokens_len, passage_tokens)
+
+        #  [CLS] + [question token] + [SEP] + [passage token] + [SEP]
+        # Truncate the passage according to the max sequence length
+        input_tokens = []  # question 和 passage 拼接
+        segment_ids = []  # 区分 question 和 passage
+        input_tokens.append('[CLS]')
+        segment_ids.append(0)
+        for i in range(len(question_tokens)):
+            input_tokens.append(question_tokens[i])
+            segment_ids.append(0)
+        input_tokens.append('[SEP]')
+        segment_ids.append(0)
+        # 拼接passage
+        for i in range(len(passage_tokens)):
+            input_tokens.append(passage_tokens[i])
+            segment_ids.append(1)
+        input_tokens.append('[SEP]')
+        segment_ids.append(1)
+        # convert_tokens_to_ids
+        input_ids = _tokenizer.convert_tokens_to_ids(input_tokens)
+        # The mask has 1 for real tokens and 0 for padding tokens.
+        input_mask = [1] * len(input_ids)
+
+        # 更新 number_index
+        input_number_index = []
+        que_offset = 1  # +1 是因为添加了 [CLS]
+        doc_offset = len(question_tokens) + 2  # +2 是因为添加了 [CLS]和[SEP]
+        for temp_number_index in number_index:
+            if temp_number_index != -1:
+                temp_number_index = temp_number_index + doc_offset
+                input_number_index.append(temp_number_index)
+            else:
+                input_number_index.append(-1)
+
+        start_indices, end_indices, add_sub_expressions, input_counts, negations, number_of_answers = [], [], [], [], [], []
+        if not _evaluate:
+            # train
+            # For distant supervision, we annotate the positions of all answer spans
+            if passage_tok_start_positions != [] and passage_tok_end_positions != []:
+                for tok_start_position, tok_end_position in zip(passage_tok_start_positions,
+                                                                passage_tok_end_positions):
+                    start_position = tok_start_position + doc_offset
+                    end_position = tok_end_position + doc_offset
+                    start_indices.append(start_position)
+                    end_indices.append(end_position)
+            elif query_tok_start_positions != [] and query_tok_end_positions != []:
+                # 如果passage中没有抽取出span 从问题中抽取
+                for tok_start_position, tok_end_position in zip(query_tok_start_positions, query_tok_end_positions):
+                    start_position = tok_start_position + que_offset
+                    end_position = tok_end_position + que_offset
+                    start_indices.append(start_position)
+                    end_indices.append(end_position)
+
+            # Weakly-supervised for addition-subtraction
+            if example['add_sub_expressions']:
+                for add_sub_expression in example['add_sub_expressions']:
+                    # 由于截断了 passage 导致 number_index 截断, 因此 expression 也应该被截断
+                    if sum(add_sub_expression[:len(input_number_index)]) >= 2:
+                        assert len(add_sub_expression[:len(input_number_index)]) == len(input_number_index)
+                        add_sub_expressions.append(add_sub_expression[:len(input_number_index)])
+
+            # Weakly-supervised for counting
+            for count in example['counts']:
+                input_counts.append(count)
+
+            # Weakly-supervised for negation
+            if example['negations']:
+                for negation in example['negations']:
+                    if sum(negation[:len(input_number_index)]) == 1:
+                        assert len(negation[:len(input_number_index)]) == len(input_number_index)
+                        negations.append(negation[:len(input_number_index)])
+
+            is_impossible = True
+            if "span_extraction" in _hparams.answering_abilities and start_indices != [] and end_indices != []:
+                is_impossible = False
+                assert example['number_of_answer'] is not None
+                number_of_answers.append(example['number_of_answer'] - 1)
+
+            if "negation" in _hparams.answering_abilities and negations != []:
+                is_impossible = False
+
+            if "addition_subtraction" in _hparams.answering_abilities and add_sub_expressions != []:
+                is_impossible = False
+
+            if "counting" in _hparams.answering_abilities and input_counts != []:
+                is_impossible = False
+
+            if start_indices == [] and end_indices == [] and number_of_answers == []:
+                start_indices.append(-1)
+                end_indices.append(-1)
+                number_of_answers.append(-1)
+
+            if not negations:
+                negations.append([-1] * len(input_number_index))
+
+            if not add_sub_expressions:
+                add_sub_expressions.append([-1] * len(input_number_index))
+
+            if not input_counts:
+                input_counts.append(-1)
+
+            if not is_impossible:
+                feature = {
+                    "unique_id": example['question_id'],
+                    "example_index": example_index,
+                    "tokens": input_tokens,
+                    "input_ids": input_ids,
+                    "input_mask": input_mask,
+                    "segment_ids": segment_ids,
+                    "number_indices": number_index,
+                    "start_indices": start_indices,
+                    "end_indices": end_indices,
+                    "number_of_answers": number_of_answers,
+                    "add_sub_expressions": add_sub_expressions,
+                    "input_counts": input_counts,
+                    "negations": negations}
+                features.append(feature)
+            else:
+                skip_count += 1
+
+        else:
+            feature = {
+                "unique_id": example['question_id'],
+                "example_index": example_index,
+                "tokens": input_tokens,
+                "input_ids": input_ids,
+                "input_mask": input_mask,
+                "segment_ids": segment_ids,
+                "number_indices": number_index}
+            features.append(feature)
+        if len(features) % 1000 == 0:
+            _log.info("Processing features: %d" % (len(features)))
+    _log.info(
+        f"Skipped {skip_count} features, truncated {truncate_count} features, kept {len(features)} features.")
+
+    return features
+
+
+def get_tensors(feature, _hparams, is_train):
+    start_indices = None
+    end_indices = None
+    number_of_answers = None
+    input_counts = None
+    new_add_sub_expressions = None
+    new_negations = None
+
+    # padding
+    input_ids = copy.deepcopy(feature['input_ids'])
+    input_mask = copy.deepcopy(feature['input_mask'])
+    segment_ids = copy.deepcopy(feature['segment_ids'])
+    # Zero-pad up to the max mini-batch sequence length.
+    while len(input_ids) < _hparams.max_question_add_passage_length:
+        input_ids.append(0)
+        input_mask.append(0)
+        segment_ids.append(0)
+    number_indices = copy.deepcopy(feature['number_indices'])
+    while len(number_indices) < _hparams.max_number_indices_len:
+        number_indices.append(-1)
+    if is_train:
+        start_indices = copy.deepcopy(feature['start_indices'])
+        end_indices = copy.deepcopy(feature['end_indices'])
+        number_of_answers = copy.deepcopy(feature['number_of_answers'])
+        input_counts = copy.deepcopy(feature['input_counts'])
+        add_sub_expressions = copy.deepcopy(feature['add_sub_expressions'])
+        negations = copy.deepcopy(feature['negations'])
+
+        while len(start_indices) < _hparams.max_answer_nums_length:
+            start_indices.append(-1)
+            end_indices.append(-1)
+        start_indices=start_indices[0:_hparams.max_answer_nums_length]
+        end_indices = end_indices[0:_hparams.max_answer_nums_length]
+
+        while len(input_counts) < _hparams.max_auxiliary_len:
+            input_counts.append(-1)
+
+        while len(number_of_answers) < _hparams.max_answer_nums_length:
+            number_of_answers.append(-1)
+        # number_of_answers=number_of_answers[0:_hparams.max_answer_nums_length]
+
+        new_add_sub_expressions = []
+        for add_sub_expression in add_sub_expressions:
+            while len(add_sub_expression) < _hparams.max_number_indices_len:
+                add_sub_expression.append(-1)
+            new_add_sub_expressions.append(add_sub_expression)
+
+        while len(new_add_sub_expressions) < _hparams.max_add_sub_combination_len:
+            new_add_sub_expressions.append([-1] * _hparams.max_number_indices_len)
+        new_add_sub_expressions=new_add_sub_expressions[0:_hparams.max_add_sub_combination_len]
+
+        new_negations = []
+        for negation in negations:
+            while len(negation) < _hparams.max_number_indices_len:
+                negation.append(-1)
+            new_negations.append(negation)
+
+        while len(new_negations) < _hparams.max_negation_combination_len:
+            new_negations.append([-1] * _hparams.max_number_indices_len)
+
+    # 转换成Tensor
+    input_ids = torch.tensor(input_ids, dtype=torch.long)
+    input_mask = torch.tensor(input_mask, dtype=torch.long)
+    segment_ids = torch.tensor(segment_ids, dtype=torch.long)
+    number_indices = torch.tensor(number_indices, dtype=torch.long)
+    if is_train:
+        start_indices = torch.tensor(start_indices, dtype=torch.long)
+        end_indices = torch.tensor(end_indices, dtype=torch.long)
+        number_of_answers = torch.tensor(number_of_answers, dtype=torch.long)
+        input_counts = torch.tensor(input_counts, dtype=torch.long)
+        add_sub_expressions = torch.tensor(new_add_sub_expressions, dtype=torch.long)
+        negations = torch.tensor(new_negations, dtype=torch.long)
+        return input_ids, input_mask, segment_ids, number_indices, start_indices, \
+               end_indices, number_of_answers, input_counts, add_sub_expressions, negations
+    else:
+        return input_ids, input_mask, segment_ids, number_indices
+
+
+def load_dataset(_hparams, _tokenizer, _evaluate=False):
     _log = get_logger(log_name="DropDataloader")
     _log.info('Load dataset with evaluate = ' + str(_evaluate))
     # 缓存
@@ -185,6 +437,7 @@ def load_dataset(_hparams, _tokenizer,_evaluate=False):
         (_hparams.testFile if _evaluate else _hparams.trainFile).split(".")[0],
         "dev" if _evaluate else "train"
     )
+
     cache_file_path = os.path.join(_hparams.cachePath, temp_file)
     if os.path.exists(cache_file_path):
         # 加载缓存数据
@@ -195,104 +448,26 @@ def load_dataset(_hparams, _tokenizer,_evaluate=False):
     else:
         _log.info("Can not load cache from " + cache_file_path)
         _log.info("Creating dataset ...")
-        if _evaluate:
-            _examples, dev_eval = get_examples(_hparams=_hparams, _tokenizer=_tokenizer,
-                                               filePath=os.path.join(_hparams.datasetPath, _hparams.testFile))
-            save_json_data_to_file(filename=_hparams.dev_eval_file, json_data=dev_eval, message="dev eval", log=_log)
+
+        features_list, tensors_list = [], []
+        if not _evaluate:
+            # train
+            _features = get_features(_hparams=_hparams, _tokenizer=_tokenizer, _evaluate=False,
+                                     file_path=os.path.join(_hparams.datasetPath, _hparams.trainFile))
+            for feature in _features:
+                tensors_list.append(get_tensors(feature=feature, _hparams=_hparams, is_train=True))
+                features_list.append(feature)
         else:
-            _examples, train_eval = get_examples(_hparams=_hparams, _tokenizer=_tokenizer,
-                                                 filePath=os.path.join(_hparams.datasetPath, _hparams.trainFile))
-            save_json_data_to_file(filename=_hparams.train_eval_file, json_data=train_eval, message="train eval",
-                                   log=_log)
+            _features = get_features(_hparams=_hparams, _tokenizer=_tokenizer, _evaluate=True,
+                                     file_path=os.path.join(_hparams.datasetPath, _hparams.testFile))
+            for feature in _features:
+                tensors_list.append(get_tensors(feature=feature, _hparams=_hparams, is_train=False))
+                features_list.append(feature)
 
-        passage_text_input_ids, passage_text_attention_mask = [], []
-        question_text_input_ids, question_text_attention_mask = [], []
-        start_indices_input_ids, start_indices_attention_mask = [], []
-        end_indices_input_ids, end_indices_attention_mask = [], []
-        counts_input_ids, count_attention_mask = [], []
-        id_input_ids, id_attention_mask = [], []
-
-        _log.info('Prepared to create tensor dataset')
-        for example in _examples:
-            temp_passage_text_input_ids, temp_passage_text_attention_mask = tokenize_sentence(
-                sent=example['passage_text'],
-                tokenizer=_tokenizer, max_length=_hparams.max_passage_length)
-            temp_question_text_input_ids, temp_question_text_attention_mask = tokenize_sentence(
-                sent=example['question_text'],
-                tokenizer=_tokenizer, max_length=_hparams.max_question_length)
-            temp_id_input_ids, temp_id_attention_mask = tokenize_sentence(
-                sent=example['id'],
-                tokenizer=_tokenizer, max_length=_hparams.max_auxiliary_len)
-            if _evaluate:
-                temp_start_indices_input_ids = [_tokenizer.cls_token_id] + [_tokenizer.pad_token_id] * (
-                        _hparams.max_answer_span_length - 1)
-                temp_start_indices_attention_mask = []
-
-                temp_end_indices_input_ids = [_tokenizer.cls_token_id] + [_tokenizer.pad_token_id] * (
-                        _hparams.max_answer_span_length - 1)
-                temp_end_indices_attention_mask = []
-
-                temp_counts_input_ids = [_tokenizer.cls_token_id] + [_tokenizer.pad_token_id] * (
-                        _hparams.max_auxiliary_len - 1)
-                temp_count_attention_mask = []
-            else:
-                temp_start_indices_input_ids, temp_start_indices_attention_mask = tokenize_sentence(
-                    sent=example['start_indices'],
-                    tokenizer=_tokenizer, max_length=_hparams.max_answer_span_length)
-                temp_end_indices_input_ids, temp_end_indices_attention_mask = tokenize_sentence(
-                    sent=example['end_indices'],
-                    tokenizer=_tokenizer, max_length=_hparams.max_answer_span_length)
-                temp_counts_input_ids, temp_count_attention_mask = tokenize_sentence(
-                    sent=example['counts'],
-                    tokenizer=_tokenizer, max_length=_hparams.max_auxiliary_len)
-
-            passage_text_input_ids.append(temp_passage_text_input_ids)
-            passage_text_attention_mask.append(temp_passage_text_attention_mask)
-            question_text_input_ids.append(temp_question_text_input_ids)
-            question_text_attention_mask.append(temp_question_text_attention_mask)
-            start_indices_input_ids.append(temp_start_indices_input_ids)
-            start_indices_attention_mask.append(temp_start_indices_attention_mask)
-            end_indices_input_ids.append(temp_end_indices_input_ids)
-            end_indices_attention_mask.append(temp_end_indices_attention_mask)
-            counts_input_ids.append(temp_counts_input_ids)
-            count_attention_mask.append(temp_count_attention_mask)
-            id_input_ids.append(temp_id_input_ids)
-            id_attention_mask.append(temp_id_attention_mask)
-
-        if not is_torch_available():
-            raise RuntimeError("PyTorch must be installed to return a PyTorch dataset.")
-        _log.info("Created dataset length = %d.", len(_examples))
-        if _evaluate:
-            _dataset = TensorDataset(
-                torch.tensor(passage_text_input_ids, dtype=torch.long),
-                torch.tensor(passage_text_attention_mask, dtype=torch.long),
-                torch.tensor(question_text_input_ids, dtype=torch.long),
-                torch.tensor(question_text_attention_mask, dtype=torch.long),
-                torch.tensor(start_indices_input_ids, dtype=torch.long),
-                torch.tensor(end_indices_input_ids, dtype=torch.long),
-                torch.tensor(counts_input_ids, dtype=torch.long),
-                torch.tensor(id_input_ids, dtype=torch.long),
-                torch.tensor(id_attention_mask, dtype=torch.long)
-            )
-        else:
-            _dataset = TensorDataset(
-                torch.tensor(passage_text_input_ids, dtype=torch.long),
-                torch.tensor(passage_text_attention_mask, dtype=torch.long),
-                torch.tensor(question_text_input_ids, dtype=torch.long),
-                torch.tensor(question_text_attention_mask, dtype=torch.long),
-                torch.tensor(start_indices_input_ids, dtype=torch.long),
-                torch.tensor(start_indices_attention_mask, dtype=torch.long),
-                torch.tensor(end_indices_input_ids, dtype=torch.long),
-                torch.tensor(end_indices_attention_mask, dtype=torch.long),
-                torch.tensor(counts_input_ids, dtype=torch.long),
-                torch.tensor(count_attention_mask, dtype=torch.long),
-                torch.tensor(id_input_ids, dtype=torch.long),
-                torch.tensor(id_attention_mask, dtype=torch.long)
-            )
-    _log.info('Prepared to save cache')
-    torch.save({"dataset": _dataset, "examples": _examples}, cache_file_path)
-    _log.info('Cache has been saved to ' + cache_file_path)
-    return _dataset, _examples
+        _log.info('Prepared to save cache')
+        torch.save({"dataset": tensors_list, "examples": features_list}, cache_file_path)
+        _log.info('Cache has been saved to ' + cache_file_path)
+        return tensors_list, features_list
 
 
 if __name__ == '__main__':
@@ -301,4 +476,5 @@ if __name__ == '__main__':
     tokenizer = AutoTokenizer.from_pretrained(hparams.pretrainedModelPath)
     log = get_logger('process_source_data_for_drop')
     # get_examples(hparams=hparams_for_all, filePath=os.path.join(hparams_for_all.datasetPath, hparams_for_all.trainFile))
-    dataset, examples = load_dataset(_hparams=hparams, _tokenizer=tokenizer, _evaluate=False)
+    # dataset, examples = load_dataset(_hparams=hparams, _tokenizer=tokenizer, _evaluate=False)
+    features = load_dataset(_hparams=hparams, _tokenizer=tokenizer, _evaluate=False)
