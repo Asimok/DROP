@@ -183,7 +183,7 @@ def load_dataset(_hparams, _tokenizer,_evaluate=False):
     # 缓存
     temp_file = "cache_from_{}_for_{}.pth".format(
         (_hparams.testFile if _evaluate else _hparams.trainFile).split(".")[0],
-        "dev" if _evaluate else "train"
+        "dev" if _evaluate else "main"
     )
     cache_file_path = os.path.join(_hparams.cachePath, temp_file)
     if os.path.exists(cache_file_path):
@@ -202,7 +202,7 @@ def load_dataset(_hparams, _tokenizer,_evaluate=False):
         else:
             _examples, train_eval = get_examples(_hparams=_hparams, _tokenizer=_tokenizer,
                                                  filePath=os.path.join(_hparams.datasetPath, _hparams.trainFile))
-            save_json_data_to_file(filename=_hparams.train_eval_file, json_data=train_eval, message="train eval",
+            save_json_data_to_file(filename=_hparams.train_eval_file, json_data=train_eval, message="main eval",
                                    log=_log)
 
         passage_text_input_ids, passage_text_attention_mask = [], []

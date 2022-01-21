@@ -177,7 +177,7 @@ def get_features(_hparams, _tokenizer, _evaluate=False, file_path=None):
                                              filePath=file_path)
     # TODO 构造输入
     skip_count, truncate_count = 0, 0
-    features = []
+    _features = []
     for (example_index, example) in enumerate(_examples):
         question_index = []
         question_tokens = []
@@ -249,7 +249,7 @@ def get_features(_hparams, _tokenizer, _evaluate=False, file_path=None):
 
         start_indices, end_indices, add_sub_expressions, input_counts, negations, number_of_answers = [], [], [], [], [], []
         if not _evaluate:
-            # train
+            # main
             # For distant supervision, we annotate the positions of all answer spans
             if passage_tok_start_positions != [] and passage_tok_end_positions != []:
                 for tok_start_position, tok_end_position in zip(passage_tok_start_positions,
@@ -329,7 +329,7 @@ def get_features(_hparams, _tokenizer, _evaluate=False, file_path=None):
                     "add_sub_expressions": add_sub_expressions,
                     "input_counts": input_counts,
                     "negations": negations}
-                features.append(feature)
+                _features.append(feature)
             else:
                 skip_count += 1
 
@@ -342,13 +342,13 @@ def get_features(_hparams, _tokenizer, _evaluate=False, file_path=None):
                 "input_mask": input_mask,
                 "segment_ids": segment_ids,
                 "number_indices": number_index}
-            features.append(feature)
-        if len(features) % 1000 == 0:
-            _log.info("Processing features: %d" % (len(features)))
+            _features.append(feature)
+        if len(_features) % 1000 == 0:
+            _log.info("Processing features: %d" % (len(_features)))
     _log.info(
-        f"Skipped {skip_count} features, truncated {truncate_count} features, kept {len(features)} features.")
+        f"Skipped {skip_count} features, truncated {truncate_count} features, kept {len(_features)} features.")
 
-    return features
+    return _features
 
 
 def get_tensors(feature, _hparams, is_train):
@@ -435,7 +435,7 @@ def load_dataset(_hparams, _tokenizer, _evaluate=False):
     # 缓存
     temp_file = "cache_from_{}_for_{}.pth".format(
         (_hparams.testFile if _evaluate else _hparams.trainFile).split(".")[0],
-        "dev" if _evaluate else "train"
+        "dev" if _evaluate else "main"
     )
 
     cache_file_path = os.path.join(_hparams.cachePath, temp_file)
@@ -451,7 +451,7 @@ def load_dataset(_hparams, _tokenizer, _evaluate=False):
 
         features_list, tensors_list = [], []
         if not _evaluate:
-            # train
+            # main
             _features = get_features(_hparams=_hparams, _tokenizer=_tokenizer, _evaluate=False,
                                      file_path=os.path.join(_hparams.datasetPath, _hparams.trainFile))
             for feature in _features:
