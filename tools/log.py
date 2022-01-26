@@ -31,8 +31,8 @@ def get_logger(log_name):
     # log path
     hparams = PARAMS
     hparams = collections.namedtuple("HParams", sorted(hparams.keys()))(**hparams)
-    log_file = hparams.logFile
-    log_dir = hparams.logPath
+    model_path = os.path.join(hparams.output_dir,hparams.current_model)
+    log_dir = os.path.join(model_path,hparams.logPath)
     # Create logger
     logger = logging.getLogger(log_name)
     logger.setLevel(logging.DEBUG)
@@ -41,8 +41,7 @@ def get_logger(log_name):
     # 避免重复输出
     if not logger.handlers:
         # Log everything (i.e., DEBUG level and above) to a file
-        log_path = os.path.join(log_dir, log_file)
-        file_handler = logging.FileHandler(log_path)
+        file_handler = logging.FileHandler(log_dir)
         file_handler.setLevel(logging.DEBUG)
 
         # Log everything except DEBUG level (i.e., INFO level and above) to console

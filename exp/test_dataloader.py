@@ -1,5 +1,6 @@
 import sys
 
+from torch.utils.data.dataloader import default_collate
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
@@ -20,22 +21,37 @@ hparams = PARAMS
 hparams = collections.namedtuple("HParams", sorted(hparams.keys()))(**hparams)
 tokenizer = AutoTokenizer.from_pretrained(hparams.pretrainedModelPath)
 
-train_dataset = DropDataloader(hparams=hparams, evaluate=False, tokenizer=tokenizer)
+train_dataset = DropDataloader(hparams=hparams, evaluate=False, tokenizer=tokenizer,
+                               file_path=os.path.join(hparams.datasetPath, hparams.trainFile))
+
+
+def my_collate(batch):
+    tensors_list, features_list, examples = [], [], []
+    for dataset_data in batch:
+        tensors_list.append(dataset_data[0])
+        features_list.append(dataset_data[1])
+        examples.append(dataset_data[2])
+    tensors_list = default_collate(tensors_list)
+
+    return tensors_list, features_list, examples
+
 
 train_dataloader = DataLoader(
     train_dataset,
     num_workers=hparams.workers,
     shuffle=True,
     drop_last=True,
-    batch_size=32,
+    batch_size=24,
+    collate_fn=my_collate
 )
 
 tqdm_batch_iterator = tqdm(train_dataloader)
 data = []
 i = 0
-for batch_idx, batch in enumerate(tqdm_batch_iterator):
+for batch_idx, (tensors, features, examples) in enumerate(tqdm_batch_iterator):
+    # for batch_idx, tensors in enumerate(tqdm_batch_iterator):
     print(batch_idx)
-    data.append(batch)
+    data.append(tensors)
     # break
     # print(batch.keys())
     # i += 1

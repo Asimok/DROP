@@ -492,7 +492,6 @@ def load_dataset(_hparams, _tokenizer, _evaluate=False, file_path=None):
         _examples, _features = get_features(_hparams=_hparams, _tokenizer=_tokenizer, _evaluate=_evaluate,
                                             file_path=file_path)
         for feature in _features:
-            # TODO 在 get_tensors 中不限制tensor的长度 改为在dataloader中拿到batch后在对长度进行padding
             tensors_list.append(get_tensors(feature=feature, _hparams=_hparams, is_train=not _evaluate))
             features_list.append(feature)
 

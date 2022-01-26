@@ -32,4 +32,4 @@ tokenizer.convert_tokens_to_ids(b)
 # m = tokenizer('matchup')
 # m.encodings[0].tokens
 
-m = tokenizer(c,d,max_length=500, padding='max_length')
+m = tokenizer(d)

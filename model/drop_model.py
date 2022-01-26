@@ -1,11 +1,10 @@
 import math
 
 import torch
-
+from pytorch_pretrained_bert import BertModel
 from torch import nn
 from torch.nn import functional
 from torch.nn.functional import log_softmax
-from transformers import BertPreTrainedModel, BertModel
 
 
 def gelu(x):
@@ -14,6 +13,7 @@ def gelu(x):
         0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
     """
     return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
+
 
 def get_self_att_representation(input, input_score, input_mask, dim=1):
     '''
@@ -29,6 +29,8 @@ def get_self_att_representation(input, input_score, input_mask, dim=1):
     input_prob = input_prob.unsqueeze(-1)
     output = torch.sum(input_prob * input, dim=dim)
     return output
+
+
 def gather_representations(output, indices):
     _ndims = len(indices.size())
     if _ndims == 1:
@@ -39,6 +41,8 @@ def gather_representations(output, indices):
     gathered_output = torch.gather(output, 1,
                                    clamped_indices.unsqueeze(-1).expand(-1, -1, output.size(-1)))
     return gathered_output
+
+
 def replace_masked_values(tensor: torch.Tensor, mask: torch.Tensor, replace_with: float) -> torch.Tensor:
     """
     Replaces all masked values in ``tensor`` with ``replace_with``.  ``mask`` must be broadcastable
@@ -51,7 +55,9 @@ def replace_masked_values(tensor: torch.Tensor, mask: torch.Tensor, replace_with
     """
     if tensor.dim() != mask.dim():
         raise ConfigurationError("tensor.dim() (%d) != mask.dim() (%d)" % (tensor.dim(), mask.dim()))
-    return tensor.masked_fill((1 - mask).byte(), replace_with)
+    return tensor.masked_fill((1 - mask).bool(), replace_with)
+
+
 def gather_log_likelihood(log_probs, labels):
     gold_mask = (labels != -1).long()
     clamped_labels = replace_masked_values(labels, gold_mask, 0)
@@ -60,11 +66,14 @@ def gather_log_likelihood(log_probs, labels):
     log_likelihood = torch.gather(log_probs, 1, clamped_labels)
     return log_likelihood
 
+
 def masked_logsumexp(log_likelihood, labels):
     gold_mask = (labels != -1).long()
     log_likelihood = replace_masked_values(log_likelihood, gold_mask, -1e7)
     log_marginal_likelihood = logsumexp(log_likelihood)
     return log_marginal_likelihood
+
+
 def logsumexp(tensor: torch.Tensor,
               dim: int = -1,
               keep_dim: bool = False) -> torch.Tensor:
@@ -101,6 +110,7 @@ def distant_cross_entropy(logits, labels):
     log_likelihood = replace_masked_values(log_likelihood, labels, -1e7)
     log_marginal_likelihood = logsumexp(log_likelihood)
     return log_marginal_likelihood
+
 
 class ConfigurationError(Exception):
     """
@@ -152,17 +162,18 @@ class BERTLayerNorm(nn.Module):
 class DROP_Model(nn.Module):
 
     def __init__(self, bert_config=None, config=None):
-        super(DROP_Model,self).__init__()
-        # config 指的是 hparams
-        self.bert = BertModel(bert_config, add_pooling_layer=False)
+        super(DROP_Model, self).__init__()
+        # self.config 指的是 hparams
+        self.bert = BertModel(bert_config)
         # 加入adapter
-        adapter_name = self.bert.load_adapter("AdapterHub/bert-base-uncased-pf-drop", source="hf")
-        self.bert.active_adapters = adapter_name
-
-        self._passage_affine = nn.Linear(config.hidden_size, 1)
-        self._question_affine = nn.Linear(config.hidden_size, 1)
-        self.answering_abilities = config.answering_abilities,
-        self._answer_ability_predictor = BertFeedForward(config, 3 * config.hidden_size, config.hidden_size,
+        # adapter_name = self.bert.load_adapter("AdapterHub/bert-base-uncased-pf-drop", source="hf")
+        # self.bert.active_adapters = adapter_name
+        self.config =config
+        self._passage_affine = nn.Linear(self.config.hidden_size, 1)
+        self._question_affine = nn.Linear(self.config.hidden_size, 1)
+        self.answering_abilities = self.config.answering_abilities,
+        self._answer_ability_predictor = BertFeedForward(self.config, 3 * self.config.hidden_size,
+                                                         self.config.hidden_size,
                                                          len(self.answering_abilities))
 
         # 对应论文中 3.2 Multi-Type Answer Predictor
@@ -171,43 +182,49 @@ class DROP_Model(nn.Module):
         self.end_pos = -3
         self.start_pos = -4
 
-        if "span_extraction" in self.answering_abilities:
-            self._span_extraction_index = self.answering_abilities.index("span_extraction")
-            self._base_predictor = BertFeedForward(config, config.hidden_size, config.hidden_size, 1)
-            self._start_predictor = BertFeedForward(config, config.hidden_size, config.hidden_size, 1)
-            self._end_predictor = BertFeedForward(config, config.hidden_size, config.hidden_size, 1)
-            self._start_affine = nn.Linear(4 * config.hidden_size, 1)
-            self._end_affine = nn.Linear(4 * config.hidden_size, 1)
-            self._span_number_predictor = BertFeedForward(config, 3 * config.hidden_size, config.hidden_size,
-                                                          config.max_number_of_answer)
+        if "span_extraction" in self.answering_abilities[0]:
+            self._span_extraction_index = self.answering_abilities[0].index("span_extraction")
+            self._base_predictor = BertFeedForward(self.config, self.config.hidden_size, self.config.hidden_size, 1)
+            self._start_predictor = BertFeedForward(self.config, self.config.hidden_size, self.config.hidden_size, 1)
+            self._end_predictor = BertFeedForward(self.config, self.config.hidden_size, self.config.hidden_size, 1)
+            self._start_affine = nn.Linear(4 * self.config.hidden_size, 1)
+            self._end_affine = nn.Linear(4 * self.config.hidden_size, 1)
+            self._span_number_predictor = BertFeedForward(self.config, 3 * self.config.hidden_size,
+                                                          self.config.hidden_size,
+                                                          self.config.max_number_of_answer)
         # 加减法
-        if "addition_subtraction" in self.answering_abilities:
-            self._addition_subtraction_index = self.answering_abilities.index("addition_subtraction")
-            self._number_sign_predictor = BertFeedForward(config, 5 * config.hidden_size, config.hidden_size, 3)
-            self._sign_embeddings = nn.Embedding(3, 2 * config.hidden_size)
-            self._sign_rerank_affine = nn.Linear(2 * config.hidden_size, 1)
-            self._sign_rerank_predictor = BertFeedForward(config, 5 * config.hidden_size, config.hidden_size, 1)
+        if "addition_subtraction" in self.answering_abilities[0]:
+            self._addition_subtraction_index = self.answering_abilities[0].index("addition_subtraction")
+            self._number_sign_predictor = BertFeedForward(self.config, 5 * self.config.hidden_size,
+                                                          self.config.hidden_size, 3)
+            self._sign_embeddings = nn.Embedding(3, 2 * self.config.hidden_size)
+            self._sign_rerank_affine = nn.Linear(2 * self.config.hidden_size, 1)
+            self._sign_rerank_predictor = BertFeedForward(self.config, 5 * self.config.hidden_size,
+                                                          self.config.hidden_size, 1)
 
-        if "counting" in self.answering_abilities:
-            self._counting_index = self.answering_abilities.index("counting")
-            self._number_count_affine = nn.Linear(2 * config.hidden_size, 1)
-            self._number_count_predictor = BertFeedForward(config, 5 * config.hidden_size, config.hidden_size, 10)
+        if "counting" in self.answering_abilities[0]:
+            self._counting_index = self.answering_abilities[0].index("counting")
+            self._number_count_affine = nn.Linear(2 * self.config.hidden_size, 1)
+            self._number_count_predictor = BertFeedForward(self.config, 5 * self.config.hidden_size,
+                                                           self.config.hidden_size, 10)
 
-        if "negation" in self.answering_abilities:
-            self._negation_index = self.answering_abilities.index("negation")
-            self._number_negation_predictor = BertFeedForward(config, 5 * config.hidden_size, config.hidden_size, 2)
+        if "negation" in self.answering_abilities[0]:
+            self._negation_index = self.answering_abilities[0].index("negation")
+            self._number_negation_predictor = BertFeedForward(self.config, 5 * self.config.hidden_size,
+                                                              self.config.hidden_size, 2)
 
         # 初始化部分 暂时不知道如何使用
         def init_weights(module):
             if isinstance(module, (nn.Linear, nn.Embedding)):
                 # Slightly different from the TF version which uses truncated_normal for initialization
                 # cf https://github.com/pytorch/pytorch/pull/5617
-                module.weight.data.normal_(mean=0.0, std=config.initializer_range)
+                module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
             elif isinstance(module, BERTLayerNorm):
-                module.beta.data.normal_(mean=0.0, std=config.initializer_range)
-                module.gamma.data.normal_(mean=0.0, std=config.initializer_range)
+                module.beta.data.normal_(mean=0.0, std=self.config.initializer_range)
+                module.gamma.data.normal_(mean=0.0, std=self.config.initializer_range)
             if isinstance(module, nn.Linear) and module.bias is not None:
                 module.bias.data.zero_()
+
         self.apply(init_weights)
 
     def forward(self, mode, input_ids, token_type_ids, attention_mask, number_indices,
@@ -223,7 +240,8 @@ class DROP_Model(nn.Module):
             sign_mask = (number_indices2 != -1).long()
             clamped_number_indices2 = replace_masked_values(number_indices2, sign_mask, 0)
             sign_output = torch.gather(sign_encoded_numbers, 2,
-                                       clamped_number_indices2.unsqueeze(-1).expand(-1, -1, -1, sign_encoded_numbers.size(-1)))
+                                       clamped_number_indices2.unsqueeze(-1).expand(-1, -1, -1,
+                                                                                    sign_encoded_numbers.size(-1)))
 
             clamped_sign_indices = replace_masked_values(sign_indices, sign_mask, 0)
             sign_embeddings = self._sign_embeddings(clamped_sign_indices)
@@ -241,32 +259,33 @@ class DROP_Model(nn.Module):
             return sign_rerank_logits
 
         elif mode == "normal":
-            span_start_log_probs=None
-            span_end_log_probs=None
-            span_number_log_probs=None
-            number_sign_log_probs=None
-            number_mask=None
-            sign_rerank_logits=None
-            number_negation_log_probs=None
-            count_number_log_probs=None
-            answer_ability_log_probs=None
-            span_start_logits=None
-            span_end_logits=None
-            encoded_numbers=None
-            number_sign_logits=None
-            best_span_number=None
-
+            span_start_log_probs = None
+            span_end_log_probs = None
+            span_number_log_probs = None
+            number_sign_log_probs = None
+            number_mask = None
+            sign_rerank_logits = None
+            number_negation_log_probs = None
+            count_number_log_probs = None
+            answer_ability_log_probs = None
+            span_start_logits = None
+            span_end_logits = None
+            encoded_numbers = None
+            number_sign_logits = None
+            best_span_number = None
 
             all_encoder_layers, pooled_output = self.bert(input_ids, token_type_ids, attention_mask)
 
             passage_weights = self._passage_affine(all_encoder_layers[self.base_pos]).squeeze(-1)
-            passage_vector = get_self_att_representation(all_encoder_layers[self.base_pos], passage_weights, token_type_ids)
+            passage_vector = get_self_att_representation(all_encoder_layers[self.base_pos], passage_weights,
+                                                         token_type_ids)
 
             question_weights = self._question_affine(all_encoder_layers[self.base_pos]).squeeze(-1)
-            question_vector = get_self_att_representation(all_encoder_layers[self.base_pos], question_weights, (1-token_type_ids))
+            question_vector = get_self_att_representation(all_encoder_layers[self.base_pos], question_weights,
+                                                          (1 - token_type_ids))
 
-            best_answer_ability,best_count_number,best_negations_for_numbers=None,None,None
-            if len(self.answering_abilities) >= 1:
+            best_answer_ability, best_count_number, best_negations_for_numbers = None, None, None
+            if len(self.answering_abilities[0]) >= 1:
                 # Shape: (batch_size, number_of_abilities)
                 answer_ability_logits = \
                     self._answer_ability_predictor(torch.cat([passage_vector, question_vector, pooled_output], -1))
@@ -277,7 +296,7 @@ class DROP_Model(nn.Module):
                 number_indices = number_indices.squeeze(-1)
                 number_mask = (number_indices != -1).long()
 
-                if "counting" in self.answering_abilities:
+                if "counting" in self.answering_abilities[0]:
                     # Shape: (batch_size, # of numbers in the passage, 2*hidden_size)
                     encoded_passage_for_numbers = torch.cat(
                         [all_encoder_layers[self.base_pos], all_encoder_layers[self.number_pos]], dim=-1)
@@ -296,7 +315,7 @@ class DROP_Model(nn.Module):
                     # Shape: (batch_size,)
                     best_count_number = torch.argmax(count_number_log_probs, -1)
 
-                if "span_extraction" in self.answering_abilities:
+                if "span_extraction" in self.answering_abilities[0]:
                     base_weights = self._base_predictor(all_encoder_layers[self.base_pos]).squeeze(-1)
                     base_q_pooled_output = get_self_att_representation(all_encoder_layers[self.base_pos],
                                                                        base_weights, (1 - token_type_ids))
@@ -311,7 +330,8 @@ class DROP_Model(nn.Module):
 
                     start_output = torch.cat((all_encoder_layers[self.base_pos], all_encoder_layers[self.start_pos],
                                               base_q_pooled_output.unsqueeze(1) * all_encoder_layers[self.base_pos],
-                                              start_q_pooled_output.unsqueeze(1) * all_encoder_layers[self.start_pos]), -1)
+                                              start_q_pooled_output.unsqueeze(1) * all_encoder_layers[self.start_pos]),
+                                             -1)
 
                     end_output = torch.cat((all_encoder_layers[self.base_pos], all_encoder_layers[self.end_pos],
                                             base_q_pooled_output.unsqueeze(1) * all_encoder_layers[self.base_pos],
@@ -324,14 +344,15 @@ class DROP_Model(nn.Module):
                     span_end_log_probs = torch.nn.functional.log_softmax(span_end_logits, -1)
 
                     # Shape: (batch_size, 8)
-                    span_number_logits = self._span_number_predictor(torch.cat([passage_vector, question_vector, pooled_output], -1))
+                    span_number_logits = self._span_number_predictor(
+                        torch.cat([passage_vector, question_vector, pooled_output], -1))
                     span_number_log_probs = torch.nn.functional.log_softmax(span_number_logits, -1)
 
                     # Info about the best count number prediction
                     # Shape: (batch_size,)
                     best_span_number = torch.argmax(span_number_log_probs, -1)
 
-                if "addition_subtraction" in self.answering_abilities:
+                if "addition_subtraction" in self.answering_abilities[0]:
                     # Shape: (batch_size, # of numbers in the passage, 2*hidden_size)
                     encoded_passage_for_numbers = torch.cat(
                         [all_encoder_layers[self.base_pos], all_encoder_layers[self.number_pos]], dim=-1)
@@ -359,7 +380,9 @@ class DROP_Model(nn.Module):
                         clamped_number_indices2 = replace_masked_values(number_indices2, sign_mask, 0)
                         # Shape: (batch_size, beam_size, max_count, 2*hidden_size)
                         sign_output = torch.gather(sign_encoded_numbers, 2,
-                                                   clamped_number_indices2.unsqueeze(-1).expand(-1, -1, -1, sign_encoded_numbers.size(-1)))
+                                                   clamped_number_indices2.unsqueeze(-1).expand(-1, -1, -1,
+                                                                                                sign_encoded_numbers.size(
+                                                                                                    -1)))
 
                         # Shape: (batch_size, beam_size, max_count, 2*hidden_size)
                         clamped_sign_indices = replace_masked_values(sign_indices, sign_mask, 0)
@@ -378,7 +401,7 @@ class DROP_Model(nn.Module):
                         # Shape: (batch_size, beam_size)
                         sign_rerank_logits = self._sign_rerank_predictor(sign_pooled_output).squeeze(-1)
 
-                if "negation" in self.answering_abilities:
+                if "negation" in self.answering_abilities[0]:
                     # Shape: (batch_size, # of numbers in the passage, 2*hidden_size)
                     encoded_passage_for_numbers = torch.cat(
                         [all_encoder_layers[self.base_pos], all_encoder_layers[self.number_pos]], dim=-1)
@@ -401,13 +424,14 @@ class DROP_Model(nn.Module):
                     best_negations_for_numbers = replace_masked_values(best_negations_for_numbers, number_mask, 0)
 
             # If answer is given, compute the loss.
-            if (answer_as_span_starts is not None and answer_as_span_ends is not None and answer_as_span_numbers is not None) \
-                or answer_as_counts is not None or answer_as_add_sub_expressions is not None or answer_as_negations is not None \
-                or (number_indices2 is not None and sign_indices is not None and sign_labels is not None):
+            if (
+                    answer_as_span_starts is not None and answer_as_span_ends is not None and answer_as_span_numbers is not None) \
+                    or answer_as_counts is not None or answer_as_add_sub_expressions is not None or answer_as_negations is not None \
+                    or (number_indices2 is not None and sign_indices is not None and sign_labels is not None):
 
                 log_marginal_likelihood_list = []
 
-                for answering_ability in self.answering_abilities:
+                for answering_ability in self.answering_abilities[0]:
                     if answering_ability == "span_extraction":
                         # Shape: (batch_size, # of answer spans)
                         log_likelihood_span_starts = gather_log_likelihood(span_start_log_probs, answer_as_span_starts)
@@ -415,8 +439,10 @@ class DROP_Model(nn.Module):
                         log_likelihood_span_starts = masked_logsumexp(log_likelihood_span_starts, answer_as_span_starts)
                         log_likelihood_span_ends = masked_logsumexp(log_likelihood_span_ends, answer_as_span_ends)
 
-                        log_likelihood_span_numbers = gather_log_likelihood(span_number_log_probs, answer_as_span_numbers)
-                        log_likelihood_span_numbers = masked_logsumexp(log_likelihood_span_numbers, answer_as_span_numbers)
+                        log_likelihood_span_numbers = gather_log_likelihood(span_number_log_probs,
+                                                                            answer_as_span_numbers)
+                        log_likelihood_span_numbers = masked_logsumexp(log_likelihood_span_numbers,
+                                                                       answer_as_span_numbers)
 
                         log_marginal_likelihood_for_span = log_likelihood_span_starts + log_likelihood_span_ends + \
                                                            log_likelihood_span_numbers
@@ -427,7 +453,8 @@ class DROP_Model(nn.Module):
                         # The padded add-sub combinations use -1 as the signs for all numbers, and we mask them here.
                         # Shape: (batch_size, # of combinations, # of numbers in the passage)
                         gold_add_sub_mask = (answer_as_add_sub_expressions != -1).long()
-                        clamped_gold_add_sub_signs = replace_masked_values(answer_as_add_sub_expressions, gold_add_sub_mask, 0)
+                        clamped_gold_add_sub_signs = replace_masked_values(answer_as_add_sub_expressions,
+                                                                           gold_add_sub_mask, 0)
                         # Shape: (batch_size, # of numbers in the passage, # of combinations)
                         gold_add_sub_signs = clamped_gold_add_sub_signs.transpose(1, 2)
                         # Shape: (batch_size, # of numbers in the passage, # of combinations)
@@ -455,7 +482,8 @@ class DROP_Model(nn.Module):
                         # Shape: (batch_size, # of count answers)
                         log_likelihood_for_counts = gather_log_likelihood(count_number_log_probs, answer_as_counts)
                         # Shape: (batch_size, )
-                        log_marginal_likelihood_for_count = masked_logsumexp(log_likelihood_for_counts, answer_as_counts)
+                        log_marginal_likelihood_for_count = masked_logsumexp(log_likelihood_for_counts,
+                                                                             answer_as_counts)
                         log_marginal_likelihood_list.append(log_marginal_likelihood_for_count)
 
                     elif answering_ability == "negation":
@@ -485,7 +513,7 @@ class DROP_Model(nn.Module):
                     else:
                         raise ValueError(f"Unsupported answering ability: {answering_ability}")
 
-                if len(self.answering_abilities) > 1:
+                if len(self.answering_abilities[0]) > 1:
                     # Add the ability probabilities if there are more than one abilities
                     all_log_marginal_likelihoods = torch.stack(log_marginal_likelihood_list, dim=-1)
                     all_log_marginal_likelihoods = all_log_marginal_likelihoods + answer_ability_log_probs
@@ -496,17 +524,17 @@ class DROP_Model(nn.Module):
 
             else:
                 output_dict = {}
-                if len(self.answering_abilities) >= 1:
+                if len(self.answering_abilities[0]) >= 1:
                     output_dict["best_answer_ability"] = best_answer_ability
-                if "counting" in self.answering_abilities:
+                if "counting" in self.answering_abilities[0]:
                     output_dict["best_count_number"] = best_count_number
-                if "negation" in self.answering_abilities:
+                if "negation" in self.answering_abilities[0]:
                     output_dict["best_negations_for_numbers"] = best_negations_for_numbers
-                if "span_extraction" in self.answering_abilities:
+                if "span_extraction" in self.answering_abilities[0]:
                     output_dict["span_start_logits"] = span_start_logits
                     output_dict["span_end_logits"] = span_end_logits
                     output_dict["best_span_number"] = best_span_number
-                if "addition_subtraction" in self.answering_abilities:
+                if "addition_subtraction" in self.answering_abilities[0]:
                     output_dict["number_sign_logits"] = number_sign_logits
                     output_dict["number_mask"] = number_mask
                     output_dict["encoded_numbers_output"] = encoded_numbers

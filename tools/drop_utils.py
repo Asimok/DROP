@@ -278,12 +278,14 @@ def batch_annotate_candidates(all_examples, batch_features, batch_results, answe
 
     batch_number_indices, batch_sign_indices, batch_sign_labels, batch_scores = [], [], [], []
     for (feature_index, feature) in enumerate(batch_features):
-        example = all_examples[feature.example_index]
-        result = unique_id_to_result[feature.unique_id]
+        # print(feature['example_index'])
+        # print(len(all_examples))
+        example = all_examples[feature['example_index']]
+        result = unique_id_to_result[feature['unique_id']]
 
         number_indices, sign_indices, sign_labels, scores = None, None, None, None
         if is_training:
-            if feature.add_sub_expressions != [[-1] * len(feature.number_indices)]:
+            if feature['add_sub_expressions'] != [[-1] * len(feature['number_indices'])]:
                 number_indices, sign_indices, sign_labels, scores = add_sub_beam_search(example, feature, result,
                                                                                         is_training, beam_size,
                                                                                         max_count)
@@ -320,11 +322,16 @@ def add_sub_beam_search(example, feature, result, is_training, beam_size, max_co
     if is_training:
         if number_indices_list != [] and sign_indices_list != []:
             for number_indices, sign_indices in zip(number_indices_list, sign_indices_list):
-                pred_answer = sum([example.numbers_in_passage[number_index] * sign_remap[sign_index]
-                                   for number_index, sign_index in zip(number_indices, sign_indices)])
+                # print('number_indices')
+                # print(example['numbers_in_passage'])
+                # print(number_indices)
+                # print(sign_indices)
+
+                pred_answer = sum([example['numbers_in_passage'][number_index] * sign_remap[sign_index]
+                                    for number_index, sign_index in zip(number_indices, sign_indices) if number_index< len(example['numbers_in_passage']) ])
                 pred_answer = float(Decimal(pred_answer).quantize(Decimal('0.0000')))
                 ground_truth_answer_strings = [answer_json_to_strings(annotation)[0] for annotation in
-                                               example.answer_annotations]
+                                               example['answer_annotations']]
                 exact_match, _ = metric_max_over_ground_truths(
                     get_metrics, str(pred_answer), ground_truth_answer_strings)
                 number_sign_labels.append(exact_match)
@@ -345,7 +352,7 @@ def add_sub_beam_search(example, feature, result, is_training, beam_size, max_co
     # Add ground truth expressions if there is no positive label
     if is_training and max(number_sign_labels) == 0:
         gold_number_indices, gold_sign_indices = [], []
-        add_sub_expression = choice(feature.add_sub_expressions)
+        add_sub_expression = choice(feature['add_sub_expressions'])
         for number_index, sign_index in enumerate(add_sub_expression):
             if sign_index > 0 and number_mask[number_index]:
                 gold_number_indices.append(number_index)
@@ -374,7 +381,7 @@ def write_predictions(all_examples, all_features, all_results, answering_abiliti
 
     example_index_to_features = collections.defaultdict(list)
     for feature in all_features:
-        example_index_to_features[feature.example_index].append(feature)
+        example_index_to_features[feature['example_index']].append(feature)
 
     unique_id_to_result = {}
     for result in all_results:
@@ -387,10 +394,12 @@ def write_predictions(all_examples, all_features, all_results, answering_abiliti
     all_nbest_json = collections.OrderedDict()
     for (example_index, example) in enumerate(all_examples):
         features = example_index_to_features[example_index]
-        assert len(features) == 1
-
-        feature = features[0]
-        result = unique_id_to_result[feature.unique_id]
+        # assert len(features) == 1
+        if len(features) == 1:
+            feature =features[0]
+        else:
+            continue
+        result = unique_id_to_result[feature['unique_id']]
         predicted_ability = result['predicted_ability']
         predicted_ability_str = answering_abilities[predicted_ability]
         nbest_json, predicted_answers = [], []
@@ -401,7 +410,7 @@ def write_predictions(all_examples, all_features, all_results, answering_abiliti
                                                                        result['sign_indices'], sign_rerank_probs,
                                                                        result['sign_probs']):
                 pred_answer = sum(
-                    [sign_remap[sign_index] * example.numbers_in_passage[number_index] for sign_index, number_index in
+                    [sign_remap[sign_index] * example['numbers_in_passage'][number_index] for sign_index, number_index in
                      zip(sign_indices, number_indices) if sign_index != -1 and number_index != -1])
                 pred_answer = str(float(Decimal(pred_answer).quantize(Decimal('0.0000'))))
                 if rerank_prob * prob > max_prob:
@@ -421,7 +430,7 @@ def write_predictions(all_examples, all_features, all_results, answering_abiliti
             nbest_json.append(output)
         elif predicted_ability_str == "negation":
             index = np.argmax(result['predicted_negations'])
-            pred_answer = 100 - example.numbers_in_passage[index]
+            pred_answer = 100 - example['numbers_in_passage'][index]
             pred_answer = float(Decimal(pred_answer).quantize(Decimal('0.0000')))
             predicted_answers.append(str(pred_answer))
             output = collections.OrderedDict()
@@ -438,13 +447,13 @@ def write_predictions(all_examples, all_features, all_results, answering_abiliti
                     # We could hypothetically create invalid predictions, e.g., predict
                     # that the start of the span is in the question. We throw out all
                     # invalid predictions.
-                    if start_index >= len(feature.tokens):
+                    if start_index >= len(feature['tokens']):
                         continue
-                    if end_index >= len(feature.tokens):
+                    if end_index >= len(feature['tokens']):
                         continue
-                    if start_index not in feature.que_token_to_orig_map and start_index not in feature.doc_token_to_orig_map:
+                    if start_index not in feature['que_token_to_orig_map'] and start_index not in feature['doc_token_to_orig_map']:
                         continue
-                    if end_index not in feature.que_token_to_orig_map and start_index not in feature.doc_token_to_orig_map:
+                    if end_index not in feature['que_token_to_orig_map'] and start_index not in feature['doc_token_to_orig_map']:
                         continue
                     if end_index < start_index:
                         continue
@@ -465,7 +474,7 @@ def write_predictions(all_examples, all_features, all_results, answering_abiliti
                             rerank_logit=0,
                             heuristic_logit=heuristic_logit))
 
-            prelim_predictions = sorted(prelim_predictions, key=lambda x: (x.heuristic_logit), reverse=True)
+            prelim_predictions = sorted(prelim_predictions, key=lambda x: x.heuristic_logit, reverse=True)
 
             _NbestPrediction = collections.namedtuple(  # pylint: disable=invalid-name
                 "NbestPrediction",
@@ -528,27 +537,27 @@ def write_predictions(all_examples, all_features, all_results, answering_abiliti
             raise ValueError(f"Unsupported answer ability: {predicted_ability_str}")
 
         assert len(nbest_json) >= 1 and len(predicted_answers) >= 1
-        if example.answer_annotations:
-            drop_metrics(predicted_answers, example.answer_annotations)
-        all_nbest_json[example.qas_id] = nbest_json
+        if example['answer_annotations']:
+            drop_metrics(predicted_answers, example['answer_annotations'])
+        all_nbest_json[example['question_id']] = nbest_json
 
     exact_match, f1_score = drop_metrics.get_metric(reset=True)
     return all_nbest_json, {'em': exact_match, 'f1': f1_score}
 
 
 def wrapped_get_final_text(example, feature, start_index, end_index, do_lower_case, verbose_logging, logger):
-    if start_index in feature.doc_token_to_orig_map and end_index in feature.doc_token_to_orig_map:
-        orig_doc_start = feature.doc_token_to_orig_map[start_index]
-        orig_doc_end = feature.doc_token_to_orig_map[end_index]
-        orig_tokens = example.passage_tokens[orig_doc_start:(orig_doc_end + 1)]
-    elif start_index in feature.que_token_to_orig_map and end_index in feature.que_token_to_orig_map:
-        orig_que_start = feature.que_token_to_orig_map[start_index]
-        orig_que_end = feature.que_token_to_orig_map[end_index]
-        orig_tokens = example.question_tokens[orig_que_start:(orig_que_end + 1)]
+    if start_index in feature['doc_token_to_orig_map'] and end_index in feature['doc_token_to_orig_map']:
+        orig_doc_start = feature['doc_token_to_orig_map'][start_index]
+        orig_doc_end = feature['doc_token_to_orig_map'][end_index]
+        orig_tokens = example['passage_tokens'][orig_doc_start:(orig_doc_end + 1)]
+    elif start_index in feature['que_token_to_orig_map'] and end_index in feature['que_token_to_orig_map']:
+        orig_que_start = feature['que_token_to_orig_map'][start_index]
+        orig_que_end = feature['que_token_to_orig_map'][end_index]
+        orig_tokens = example['question_tokens'][orig_que_start:(orig_que_end + 1)]
     else:
         return None
 
-    tok_tokens = feature.tokens[start_index:(end_index + 1)]
+    tok_tokens = feature['tokens'][start_index:(end_index + 1)]
     tok_text = " ".join(tok_tokens)
 
     # De-tokenize WordPieces that have been split off.
